@@ -1,6 +1,6 @@
 import base64
 import re
-from unittest.mock import MagicMock, create_autospec
+from unittest.mock import MagicMock, create_autospec, patch
 
 import pytest
 
@@ -10,6 +10,7 @@ from databricks.labs.lakebridge.reconcile.connectors.tsql import TSQLServerDataS
 from databricks.labs.lakebridge.reconcile.exception import DataSourceRuntimeException
 from databricks.labs.lakebridge.reconcile.recon_config import JdbcReaderOptions, Table
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.errors import NotFound
 from databricks.sdk.service.workspace import GetSecretResponse
 
 
@@ -180,3 +181,79 @@ def test_normalize_identifier():
     assert data_source.normalize_identifier('[ g h ]') == NormalizedIdentifier("` g h `", '[ g h ]')
     assert data_source.normalize_identifier('[[i]]]') == NormalizedIdentifier("`[i]`", '[[i]]]')
     assert data_source.normalize_identifier('"""j""k"""') == NormalizedIdentifier('`"j"k"`', '["j"k"]')
+
+
+def mock_secret_minimal(scope, key):
+    """4-key secret scope: only host, database, user, password."""
+    minimal_secrets = {
+        "scope": {
+            'user': GetSecretResponse(key='user', value=base64.b64encode(b'my_client_id').decode('utf-8')),
+            'password': GetSecretResponse(key='password', value=base64.b64encode(b'my_client_secret').decode('utf-8')),
+            'host': GetSecretResponse(key='host', value=base64.b64encode(b'my_host.database.windows.net').decode('utf-8')),
+            'database': GetSecretResponse(key='database', value=base64.b64encode(b'my_database').decode('utf-8')),
+        }
+    }
+    if key not in minimal_secrets[scope]:
+        raise NotFound(f"Secret not found: {key}")
+    return minimal_secrets[scope][key]
+
+
+def test_get_jdbc_url_without_optional_secrets():
+    pyspark_sql_session = MagicMock()
+    spark = pyspark_sql_session.SparkSession.builder.getOrCreate()
+    engine = get_dialect("tsql")
+    ws = create_autospec(WorkspaceClient)
+    ws.secrets.get_secret.side_effect = mock_secret_minimal
+
+    data_source = TSQLServerDataSource(engine, spark, ws, "scope")
+    url = data_source.get_jdbc_url
+
+    assert url == "jdbc:sqlserver://my_host.database.windows.net;databaseName=my_database;encrypt=true;"
+
+
+def test_azure_ad_auth_mode():
+    import sys  # pylint: disable=import-outside-toplevel
+
+    pyspark_sql_session = MagicMock()
+    spark = pyspark_sql_session.SparkSession.builder.getOrCreate()
+    engine = get_dialect("tsql")
+    ws = create_autospec(WorkspaceClient)
+    ws.secrets.get_secret.side_effect = mock_secret_minimal
+    ws.config.azure_tenant_id = "my_tenant_id"
+
+    mock_token = MagicMock()
+    mock_token.token = "my_access_token"
+    mock_credential_instance = MagicMock()
+    mock_credential_instance.get_token.return_value = mock_token
+    mock_cred_cls = MagicMock(return_value=mock_credential_instance)
+
+    mock_azure_identity = MagicMock()
+    mock_azure_identity.ClientSecretCredential = mock_cred_cls
+
+    with patch.dict(sys.modules, {"azure": MagicMock(), "azure.identity": mock_azure_identity}):
+        data_source = TSQLServerDataSource(engine, spark, ws, "scope")
+        creds = data_source._get_user_password()
+
+    mock_cred_cls.assert_called_once_with("my_tenant_id", "my_client_id", "my_client_secret")
+    mock_credential_instance.get_token.assert_called_once_with("https://database.windows.net/.default")
+    assert creds == {
+        "accessToken": "my_access_token",
+        "hostNameInCertificate": "*.database.windows.net",
+    }
+
+
+def test_sql_auth_fallback_when_no_tenant_id():
+    pyspark_sql_session = MagicMock()
+    spark = pyspark_sql_session.SparkSession.builder.getOrCreate()
+    engine = get_dialect("tsql")
+    ws = create_autospec(WorkspaceClient)
+    ws.secrets.get_secret.side_effect = mock_secret_minimal
+    ws.config.azure_tenant_id = None
+
+    data_source = TSQLServerDataSource(engine, spark, ws, "scope")
+    creds = data_source._get_user_password()
+
+    assert creds == {
+        "user": "my_client_id",
+        "password": "my_client_secret",
+    }

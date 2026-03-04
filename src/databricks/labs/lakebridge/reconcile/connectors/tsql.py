@@ -68,13 +68,17 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
 
     @property
     def get_jdbc_url(self) -> str:
-        # Construct the JDBC URL
-        return (
-            f"jdbc:{self._DRIVER}://{self._get_secret('host')}:{self._get_secret('port')};"
-            f"databaseName={self._get_secret('database')};"
-            f"encrypt={self._get_secret('encrypt')};"
-            f"trustServerCertificate={self._get_secret('trustServerCertificate')};"
-        )
+        host = self._get_secret('host')
+        port = self._get_secret_or_none('port')
+        database = self._get_secret('database')
+        encrypt = self._get_secret_or_none('encrypt') or "true"
+        trust_cert = self._get_secret_or_none('trustServerCertificate')
+
+        host_port = f"{host}:{port}" if port else host
+        url = f"jdbc:{self._DRIVER}://{host_port};databaseName={database};encrypt={encrypt};"
+        if trust_cert:
+            url += f"trustServerCertificate={trust_cert};"
+        return url
 
     def read_data(
         self,
@@ -139,7 +143,28 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
         creds = self._get_user_password()
         return self._get_jdbc_reader(query, self.get_jdbc_url, self._DRIVER, {**options, **creds})
 
+    def _get_access_token(self) -> str | None:
+        try:
+            from azure.identity import ClientSecretCredential  # pylint: disable=import-outside-toplevel
+
+            tenant_id = self._get_secret_or_none('tenant_id') or self._ws.config.azure_tenant_id
+            if not tenant_id:
+                return None
+            client_id = self._get_secret('user')
+            client_secret = self._get_secret('password')
+            credential = ClientSecretCredential(tenant_id, client_id, client_secret)
+            token = credential.get_token("https://database.windows.net/.default")
+            return token.token
+        except Exception:  # pylint: disable=broad-except
+            return None
+
     def _get_user_password(self) -> Mapping[str, str]:
+        access_token = self._get_access_token()
+        if access_token:
+            return {
+                "accessToken": access_token,
+                "hostNameInCertificate": "*.database.windows.net",
+            }
         return {
             "user": self._get_secret("user"),
             "password": self._get_secret("password"),
