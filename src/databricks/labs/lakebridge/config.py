@@ -268,6 +268,7 @@ class ReconcileConfig:
     database_config: DatabaseConfig
     metadata_config: ReconcileMetadataConfig
     job_overrides: ReconcileJobConfig | None = None
+    jdbc_url: str | None = None
 
 
 @dataclass

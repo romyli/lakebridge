@@ -59,6 +59,42 @@ def test_get_jdbc_url_happy():
     )
 
 
+def test_get_jdbc_url_direct():
+    """When a JDBC URL is provided directly, it is used as-is without any secret lookups."""
+    pyspark_sql_session = MagicMock()
+    spark = pyspark_sql_session.SparkSession.builder.getOrCreate()
+    engine = get_dialect("tsql")
+    direct_url = "jdbc:sqlserver://myserver:1433;databaseName=mydb;user=myuser;password=mypass;encrypt=true;trustServerCertificate=true;"
+
+    data_source = TSQLServerDataSource(engine, spark, ws=None, secret_scope=None, jdbc_url=direct_url)
+
+    assert data_source.get_jdbc_url == direct_url
+    # No secrets should be accessed
+    assert data_source._get_user_password() == {}
+
+
+def test_read_data_with_direct_jdbc_url():
+    """read_data works without secrets when a JDBC URL is passed directly."""
+    pyspark_sql_session = MagicMock()
+    spark = pyspark_sql_session.SparkSession.builder.getOrCreate()
+    engine = get_dialect("tsql")
+    direct_url = "jdbc:sqlserver://myserver:1433;databaseName=mydb;user=myuser;password=mypass;encrypt=true;trustServerCertificate=true;"
+
+    data_source = TSQLServerDataSource(engine, spark, ws=None, secret_scope=None, jdbc_url=direct_url)
+    table_conf = Table(
+        source_name="src_supplier",
+        target_name="tgt_supplier",
+        jdbc_reader_options=JdbcReaderOptions(
+            number_partitions=4, partition_column="id", lower_bound="0", upper_bound="100"
+        ),
+    )
+
+    data_source.read_data("org", "data", "employee", "SELECT * from :tbl", table_conf.jdbc_reader_options)
+
+    spark.read.format.assert_called_with("jdbc")
+    spark.read.format().option.assert_called_with("url", direct_url)
+
+
 def test_read_data_with_options():
     # initial setup
     engine, spark, ws, scope = initial_setup()

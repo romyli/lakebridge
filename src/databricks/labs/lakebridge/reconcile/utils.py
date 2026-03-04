@@ -12,12 +12,13 @@ logger = logging.getLogger(__name__)
 
 
 def initialise_data_source(
-    ws: WorkspaceClient,
+    ws: WorkspaceClient | None,
     spark: SparkSession,
     engine: str,
-    secret_scope: str,
+    secret_scope: str | None,
+    jdbc_url: str | None = None,
 ):
-    source = create_adapter(engine=get_dialect(engine), spark=spark, ws=ws, secret_scope=secret_scope)
+    source = create_adapter(engine=get_dialect(engine), spark=spark, ws=ws, secret_scope=secret_scope, jdbc_url=jdbc_url)
     target = create_adapter(engine=get_dialect("databricks"), spark=spark, ws=ws, secret_scope=secret_scope)
 
     return source, target
