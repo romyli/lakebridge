@@ -13,7 +13,11 @@ from databricks.labs.lakebridge.reconcile.connectors.jdbc_reader import JDBCRead
 from databricks.labs.lakebridge.reconcile.connectors.models import NormalizedIdentifier
 from databricks.labs.lakebridge.reconcile.connectors.secrets import SecretsMixin
 from databricks.labs.lakebridge.reconcile.connectors.dialect_utils import DialectUtils
-from databricks.labs.lakebridge.reconcile.recon_config import JdbcReaderOptions, Schema, OptionalPrimitiveType
+from databricks.labs.lakebridge.reconcile.recon_config import (
+    JdbcReaderOptions,
+    Schema,
+    OptionalPrimitiveType,
+)
 from databricks.sdk import WorkspaceClient
 
 logger = logging.getLogger(__name__)
@@ -88,7 +92,11 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
         query: str,
         options: JdbcReaderOptions | None,
     ) -> DataFrame:
-        table_query = query.replace(":tbl", f"{catalog}.{schema}.{self.normalize_identifier(table).source_normalized}")
+        normalized_table = self.normalize_identifier(table).source_normalized
+        table_ref = (
+            f"{catalog}.{schema}.{normalized_table}" if catalog else f"{schema}.{normalized_table}"
+        )
+        table_query = query.replace(":tbl", table_ref)
         with_clause_pattern = re.compile(r'WITH\s+.*?\)\s*(?=SELECT)', re.IGNORECASE | re.DOTALL)
         match = with_clause_pattern.search(table_query)
         if match:
@@ -136,7 +144,9 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
         except (RuntimeError, PySparkException) as e:
             return self.log_and_throw_exception(e, "schema", schema_query)
 
-    def reader(self, query: str, options: Mapping[str, OptionalPrimitiveType] | None = None) -> DataFrameReader:
+    def reader(
+        self, query: str, options: Mapping[str, OptionalPrimitiveType] | None = None
+    ) -> DataFrameReader:
         if options is None:
             options = {}
 
