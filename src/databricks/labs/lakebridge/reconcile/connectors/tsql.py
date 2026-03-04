@@ -50,7 +50,7 @@ _SCHEMA_QUERY = """SELECT
                     WHERE
                     LOWER(TABLE_NAME) = LOWER('{table}')
                     AND LOWER(TABLE_SCHEMA) = LOWER('{schema}')
-                    AND LOWER(TABLE_CATALOG) = LOWER('{catalog}')
+                    {catalog_filter}
               """
 
 
@@ -131,10 +131,11 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
         Information Schema object, RunTimeError will be raised:
         "SQL access control error: Insufficient privileges to operate on schema 'INFORMATION_SCHEMA' "
         """
+        catalog_filter = f"AND LOWER(TABLE_CATALOG) = LOWER('{catalog}')" if catalog else ""
         schema_query = re.sub(
             r'\s+',
             ' ',
-            _SCHEMA_QUERY.format(catalog=catalog, schema=schema, table=table),
+            _SCHEMA_QUERY.format(catalog_filter=catalog_filter, schema=schema, table=table),
         )
         try:
             logger.debug(f"Fetching schema using query: \n`{schema_query}`")
@@ -161,9 +162,6 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
                 "accessToken": self._access_token,
                 "hostNameInCertificate": "*.database.windows.net",
             }
-        if self._jdbc_url is not None:
-            # Credentials are embedded in the JDBC URL; no separate options needed.
-            return {}
         return {
             "user": self._get_secret("user"),
             "password": self._get_secret("password"),
