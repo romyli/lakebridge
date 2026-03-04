@@ -19,6 +19,7 @@ def create_adapter(
     ws: WorkspaceClient | None,
     secret_scope: str | None,
     jdbc_url: str | None = None,
+    access_token: str | None = None,
 ) -> DataSource:
     if isinstance(engine, Snowflake):
         return SnowflakeDataSource(engine, spark, ws, secret_scope)
@@ -27,5 +28,5 @@ def create_adapter(
     if isinstance(engine, Databricks):
         return DatabricksDataSource(engine, spark, ws, secret_scope)
     if isinstance(engine, Tsql):
-        return TSQLServerDataSource(engine, spark, ws, secret_scope, jdbc_url=jdbc_url)
+        return TSQLServerDataSource(engine, spark, ws, secret_scope, jdbc_url=jdbc_url, access_token=access_token)
     raise ValueError(f"Unsupported source type --> {engine}")

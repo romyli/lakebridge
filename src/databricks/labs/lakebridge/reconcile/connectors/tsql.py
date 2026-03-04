@@ -65,12 +65,14 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
         ws: WorkspaceClient | None,
         secret_scope: str | None,
         jdbc_url: str | None = None,
+        access_token: str | None = None,
     ):
         self._engine = engine
         self._spark = spark
         self._ws = ws
         self._secret_scope = secret_scope
         self._jdbc_url = jdbc_url
+        self._access_token = access_token
 
     @property
     def get_jdbc_url(self) -> str:
@@ -154,6 +156,11 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
         return self._get_jdbc_reader(query, self.get_jdbc_url, self._DRIVER, {**options, **creds})
 
     def _get_user_password(self) -> Mapping[str, str]:
+        if self._access_token is not None:
+            return {
+                "accessToken": self._access_token,
+                "hostNameInCertificate": "*.database.windows.net",
+            }
         if self._jdbc_url is not None:
             # Credentials are embedded in the JDBC URL; no separate options needed.
             return {}

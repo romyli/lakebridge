@@ -17,8 +17,9 @@ def initialise_data_source(
     engine: str,
     secret_scope: str | None,
     jdbc_url: str | None = None,
+    access_token: str | None = None,
 ):
-    source = create_adapter(engine=get_dialect(engine), spark=spark, ws=ws, secret_scope=secret_scope, jdbc_url=jdbc_url)
+    source = create_adapter(engine=get_dialect(engine), spark=spark, ws=ws, secret_scope=secret_scope, jdbc_url=jdbc_url, access_token=access_token)
     target = create_adapter(engine=get_dialect("databricks"), spark=spark, ws=ws, secret_scope=secret_scope)
 
     return source, target
