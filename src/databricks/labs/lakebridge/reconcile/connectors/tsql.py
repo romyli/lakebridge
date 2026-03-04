@@ -1,3 +1,4 @@
+import os
 import re
 import logging
 from datetime import datetime
@@ -68,13 +69,17 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
 
     @property
     def get_jdbc_url(self) -> str:
-        # Construct the JDBC URL
-        return (
-            f"jdbc:{self._DRIVER}://{self._get_secret('host')}:{self._get_secret('port')};"
-            f"databaseName={self._get_secret('database')};"
-            f"encrypt={self._get_secret('encrypt')};"
-            f"trustServerCertificate={self._get_secret('trustServerCertificate')};"
-        )
+        host = self._get_secret('host')
+        port = self._get_secret_or_none('port')
+        database = self._get_secret('database')
+        encrypt = self._get_secret_or_none('encrypt') or "true"
+        trust_cert = self._get_secret_or_none('trustServerCertificate')
+
+        host_port = f"{host}:{port}" if port else host
+        url = f"jdbc:{self._DRIVER}://{host_port};databaseName={database};encrypt={encrypt};"
+        if trust_cert:
+            url += f"trustServerCertificate={trust_cert};"
+        return url
 
     def read_data(
         self,
@@ -84,7 +89,9 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
         query: str,
         options: JdbcReaderOptions | None,
     ) -> DataFrame:
-        table_query = query.replace(":tbl", f"{catalog}.{schema}.{self.normalize_identifier(table).source_normalized}")
+        normalized_table = self.normalize_identifier(table).source_normalized
+        table_ref = f"{catalog}.{schema}.{normalized_table}" if catalog else f"{schema}.{normalized_table}"
+        table_query = query.replace(":tbl", table_ref)
         with_clause_pattern = re.compile(r'WITH\s+.*?\)\s*(?=SELECT)', re.IGNORECASE | re.DOTALL)
         match = with_clause_pattern.search(table_query)
         if match:
@@ -139,7 +146,40 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
         creds = self._get_user_password()
         return self._get_jdbc_reader(query, self.get_jdbc_url, self._DRIVER, {**options, **creds})
 
+    def _get_access_token(self) -> str | None:
+        try:
+            from azure.identity import ClientSecretCredential  # pylint: disable=import-outside-toplevel
+
+            tenant_id = (
+                self._get_secret_or_none('tenant_id')
+                or self._ws.config.azure_tenant_id
+                or os.environ.get('AZURE_TENANT_ID')
+            )
+            logger.debug("Azure AD auth: tenant_id source resolved to %s", tenant_id)
+            if not tenant_id:
+                logger.debug("Azure AD auth: no tenant_id found, skipping token acquisition")
+                return None
+            client_id = self._get_secret('user')
+            logger.debug("Azure AD auth: acquiring token for client_id=%s", client_id)
+            client_secret = self._get_secret('password')
+            credential = ClientSecretCredential(tenant_id, client_id, client_secret)
+            token = credential.get_token("https://database.windows.net/.default")
+            logger.debug("Azure AD auth: token acquired successfully, expires_on=%s", token.expires_on)
+            return token.token
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("Azure AD auth: token acquisition failed, falling back to SQL auth: %s", exc)
+            logger.debug("Azure AD auth: token acquisition exception detail", exc_info=exc)
+            return None
+
     def _get_user_password(self) -> Mapping[str, str]:
+        access_token = self._get_access_token()
+        if access_token:
+            logger.debug("Using Azure AD token auth")
+            return {
+                "accessToken": access_token,
+                "hostNameInCertificate": "*.database.windows.net",
+            }
+        logger.debug("Using SQL username/password auth")
         return {
             "user": self._get_secret("user"),
             "password": self._get_secret("password"),
