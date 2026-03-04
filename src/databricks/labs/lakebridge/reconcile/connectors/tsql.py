@@ -1,3 +1,4 @@
+import os
 import re
 import logging
 from datetime import datetime
@@ -147,24 +148,36 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
         try:
             from azure.identity import ClientSecretCredential  # pylint: disable=import-outside-toplevel
 
-            tenant_id = self._get_secret_or_none('tenant_id') or self._ws.config.azure_tenant_id
+            tenant_id = (
+                self._get_secret_or_none('tenant_id')
+                or self._ws.config.azure_tenant_id
+                or os.environ.get('AZURE_TENANT_ID')
+            )
+            logger.debug("Azure AD auth: tenant_id source resolved to %s", tenant_id)
             if not tenant_id:
+                logger.debug("Azure AD auth: no tenant_id found, skipping token acquisition")
                 return None
             client_id = self._get_secret('user')
+            logger.debug("Azure AD auth: acquiring token for client_id=%s", client_id)
             client_secret = self._get_secret('password')
             credential = ClientSecretCredential(tenant_id, client_id, client_secret)
             token = credential.get_token("https://database.windows.net/.default")
+            logger.debug("Azure AD auth: token acquired successfully, expires_on=%s", token.expires_on)
             return token.token
-        except Exception:  # pylint: disable=broad-except
+        except Exception as exc:  # pylint: disable=broad-except
+            logger.warning("Azure AD auth: token acquisition failed, falling back to SQL auth: %s", exc)
+            logger.debug("Azure AD auth: token acquisition exception detail", exc_info=exc)
             return None
 
     def _get_user_password(self) -> Mapping[str, str]:
         access_token = self._get_access_token()
         if access_token:
+            logger.debug("Using Azure AD token auth")
             return {
                 "accessToken": access_token,
                 "hostNameInCertificate": "*.database.windows.net",
             }
+        logger.debug("Using SQL username/password auth")
         return {
             "user": self._get_secret("user"),
             "password": self._get_secret("password"),
