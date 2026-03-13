@@ -83,6 +83,8 @@ class TriggerReconService:
             spark=spark,
             ws=ws_client,
             secret_scope=reconcile_config.secret_scope,
+            jdbc_url=reconcile_config.jdbc_url,
+            access_token=reconcile_config.access_token,
         )
 
         recon_id = uuid4().hex
