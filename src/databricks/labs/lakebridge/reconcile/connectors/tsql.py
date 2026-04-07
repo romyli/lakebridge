@@ -13,7 +13,11 @@ from databricks.labs.lakebridge.reconcile.connectors.jdbc_reader import JDBCRead
 from databricks.labs.lakebridge.reconcile.connectors.models import NormalizedIdentifier
 from databricks.labs.lakebridge.reconcile.connectors.secrets import SecretsMixin
 from databricks.labs.lakebridge.reconcile.connectors.dialect_utils import DialectUtils
-from databricks.labs.lakebridge.reconcile.recon_config import JdbcReaderOptions, Schema, OptionalPrimitiveType
+from databricks.labs.lakebridge.reconcile.recon_config import (
+    JdbcReaderOptions,
+    Schema,
+    OptionalPrimitiveType,
+)
 from databricks.sdk import WorkspaceClient
 
 logger = logging.getLogger(__name__)
@@ -46,7 +50,7 @@ _SCHEMA_QUERY = """SELECT
                     WHERE
                     LOWER(TABLE_NAME) = LOWER('{table}')
                     AND LOWER(TABLE_SCHEMA) = LOWER('{schema}')
-                    AND LOWER(TABLE_CATALOG) = LOWER('{catalog}')
+                    {catalog_filter}
               """
 
 
@@ -58,17 +62,23 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
         self,
         engine: Dialect,
         spark: SparkSession,
-        ws: WorkspaceClient,
-        secret_scope: str,
+        ws: WorkspaceClient | None,
+        secret_scope: str | None,
+        jdbc_url: str | None = None,
+        access_token: str | None = None,
     ):
         self._engine = engine
         self._spark = spark
         self._ws = ws
         self._secret_scope = secret_scope
+        self._jdbc_url = jdbc_url
+        self._access_token = access_token
 
     @property
     def get_jdbc_url(self) -> str:
-        # Construct the JDBC URL
+        if self._jdbc_url is not None:
+            return self._jdbc_url
+        # Construct the JDBC URL from secrets
         return (
             f"jdbc:{self._DRIVER}://{self._get_secret('host')}:{self._get_secret('port')};"
             f"databaseName={self._get_secret('database')};"
@@ -84,7 +94,11 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
         query: str,
         options: JdbcReaderOptions | None,
     ) -> DataFrame:
-        table_query = query.replace(":tbl", f"{catalog}.{schema}.{self.normalize_identifier(table).source_normalized}")
+        normalized_table = self.normalize_identifier(table).source_normalized
+        table_ref = (
+            f"{catalog}.{schema}.{normalized_table}" if catalog else f"{schema}.{normalized_table}"
+        )
+        table_query = query.replace(":tbl", table_ref)
         with_clause_pattern = re.compile(r'WITH\s+.*?\)\s*(?=SELECT)', re.IGNORECASE | re.DOTALL)
         match = with_clause_pattern.search(table_query)
         if match:
@@ -117,10 +131,11 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
         Information Schema object, RunTimeError will be raised:
         "SQL access control error: Insufficient privileges to operate on schema 'INFORMATION_SCHEMA' "
         """
+        catalog_filter = f"AND LOWER(TABLE_CATALOG) = LOWER('{catalog}')" if catalog else ""
         schema_query = re.sub(
             r'\s+',
             ' ',
-            _SCHEMA_QUERY.format(catalog=catalog, schema=schema, table=table),
+            _SCHEMA_QUERY.format(catalog_filter=catalog_filter, schema=schema, table=table),
         )
         try:
             logger.debug(f"Fetching schema using query: \n`{schema_query}`")
@@ -132,7 +147,9 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
         except (RuntimeError, PySparkException) as e:
             return self.log_and_throw_exception(e, "schema", schema_query)
 
-    def reader(self, query: str, options: Mapping[str, OptionalPrimitiveType] | None = None) -> DataFrameReader:
+    def reader(
+        self, query: str, options: Mapping[str, OptionalPrimitiveType] | None = None
+    ) -> DataFrameReader:
         if options is None:
             options = {}
 
@@ -140,6 +157,11 @@ class TSQLServerDataSource(DataSource, SecretsMixin, JDBCReaderMixin):
         return self._get_jdbc_reader(query, self.get_jdbc_url, self._DRIVER, {**options, **creds})
 
     def _get_user_password(self) -> Mapping[str, str]:
+        if self._access_token is not None:
+            return {
+                "accessToken": self._access_token,
+                "hostNameInCertificate": "*.database.windows.net",
+            }
         return {
             "user": self._get_secret("user"),
             "password": self._get_secret("password"),
